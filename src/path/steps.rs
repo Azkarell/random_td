@@ -1,4 +1,3 @@
-use super::context::{Distances, PathContext};
 
 pub enum AlgorithmStepResult<T> {
     Success(T),

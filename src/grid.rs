@@ -9,6 +9,7 @@ use bevy::{
     color::Color,
     ecs::{
         component::Component,
+        entity::Entity,
         resource::Resource,
         schedule::{IntoScheduleConfigs, SystemSet},
         system::{Commands, Query, Res, ResMut},
@@ -221,17 +222,25 @@ pub fn init_grid(
 }
 
 pub fn update_color(
+    mut commands: Commands,
     world_pos: Res<MouseWorldPos>,
     size: Res<HexGridRenderRadius>,
-    q_entries: Query<(&GridEntity, &mut MeshMaterial2d<ColorMaterial>)>,
+    q_entries: Query<(Entity, &GridEntity, &mut MeshMaterial2d<ColorMaterial>)>,
     colors: Res<HexColorMap>,
     mut hex_grid: ResMut<HexHashGrid>,
+    path: Res<HexPath<GridIndex>>,
     default_color: Res<DefaultHexMaterial>,
 ) {
     let access = world_pos.0.map(|p| GridIndex::from_world_pos(p, **size));
 
     if let Some(p) = access {
-        for (e, mut mat) in q_entries {
+        for (entity, e, mut mat) in q_entries {
+            if e.0 == path.start {
+                commands.entity(entity).insert_if_new(PathStart(e.0));
+            }
+            if e.0 == path.end {
+                commands.entity(entity).insert_if_new(PathEnd(e.0));
+            }
             let state = &mut hex_grid[e.0];
             if e.0 != p {
                 state.1 = GridEntryState::Normal;
@@ -242,7 +251,13 @@ pub fn update_color(
             **mat = color_handle;
         }
     } else {
-        for (e, mut mat) in q_entries {
+        for (entity, e, mut mat) in q_entries {
+            if e.0 == path.start {
+                commands.entity(entity).insert_if_new(PathStart(e.0));
+            }
+            if e.0 == path.end {
+                commands.entity(entity).insert_if_new(PathEnd(e.0));
+            }
             let state = &mut hex_grid[e.0];
             state.1 = GridEntryState::Normal;
             let color_handle = colors.get_handle(state).unwrap_or(default_color.clone());
@@ -277,7 +292,10 @@ pub fn cube_round(vec: Vec3) -> Vec3 {
     }
     rounded
 }
-
+#[derive(Component, Deref)]
+pub struct PathStart(pub GridIndex);
+#[derive(Component, Deref)]
+pub struct PathEnd(pub GridIndex);
 #[derive(Resource)]
 pub struct HexHashGrid {
     data: HashMap<GridIndex, HexGridEntryState>,
@@ -293,7 +311,7 @@ impl HexHashGrid {
             data: HashMap::new(),
         }
     }
-    pub fn from_path(path: &HexPath) -> Self {
+    pub fn from_path(path: &HexPath<GridIndex>) -> Self {
         Self {
             data: path
                 .nodes

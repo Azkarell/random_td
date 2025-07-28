@@ -1,10 +1,10 @@
-use bevy::{log::info, platform::collections::HashMap};
+use bevy::platform::collections::HashMap;
 use std::cmp::Ordering;
 use std::hash::Hash;
 
 use crate::grid::{GridEntry, GridIndex, HexGridColumns, HexGridRows, HexHashGrid};
 
-use super::dijkstra::{TileState, TileStateCache};
+use super::dijkstra::{DistanceFunction, TileState};
 
 #[derive(Clone, Copy)]
 pub struct PathContext<'a> {
@@ -230,7 +230,7 @@ pub trait Cache<B: CacheBehaviour> {
         should_update: C,
     ) -> CacheUpdateResult;
     fn clear(&mut self);
-    fn min_by<F: FnMut(&Self::Output, &Self::Output) -> Ordering>(
+    fn min_by<F: FnMut(&Self::Output, &Self::Output) -> Option<Ordering>>(
         &self,
         cmp: F,
     ) -> Option<(Self::Access, Self::Output)>;
@@ -277,12 +277,12 @@ where
         self.clear();
     }
 
-    fn min_by<F: FnMut(&Self::Output, &Self::Output) -> Ordering>(
+    fn min_by<F: FnMut(&Self::Output, &Self::Output) -> Option<Ordering>>(
         &self,
         mut cmp: F,
     ) -> Option<(Self::Access, Self::Output)> {
         self.iter()
-            .min_by(|x, y| cmp(x.1, y.1))
+            .min_by(|x, y| cmp(x.1, y.1).unwrap_or(Ordering::Equal))
             .map(|v| (*v.0, *v.1))
     }
 
@@ -347,12 +347,12 @@ where
         self.clear();
     }
 
-    fn min_by<F: FnMut(&Self::Output, &Self::Output) -> Ordering>(
+    fn min_by<F: FnMut(&Self::Output, &Self::Output) -> Option<Ordering>>(
         &self,
         mut cmp: F,
     ) -> Option<(Self::Access, Self::Output)> {
         self.iter()
-            .min_by(|x, y| cmp(x.1, y.1))
+            .min_by(|x, y| cmp(x.1, y.1).unwrap_or(Ordering::Equal))
             .map(|v| (*v.0, *v.1))
     }
 
@@ -388,10 +388,10 @@ pub trait DistanceCache: Cache<IgnoreMissingEntries> {
 
 impl<C: Cache<IgnoreMissingEntries>> DistanceCache for C
 where
-    C::Output: Ord + PartialOrd + Clone + Copy,
+    Self::Output: PartialOrd + Clone + Copy,
 {
     fn get_min(&self) -> Option<(Self::Access, Self::Output)> {
-        self.min_by(|l, r| l.cmp(r))
+        self.min_by(|l, r| l.partial_cmp(r))
     }
 
     fn update_distance(&mut self, access: &Self::Access, value: Self::Output) -> CacheUpdateResult {

@@ -14,6 +14,7 @@ use bevy::{
         component::Component,
         entity::Entity,
         query::Added,
+        resource::Resource,
         schedule::SystemSet,
         system::{Commands, Query, ResMut},
     },
@@ -25,6 +26,7 @@ use bevy::{
     transform::components::Transform,
 };
 use context::{DistanceCache, PathContext};
+use dijkstra::{DistanceValue, Indexable};
 use random::RandomSelector;
 
 #[derive(Component, Debug)]
@@ -61,11 +63,22 @@ fn update_segments(
     }
 }
 
-#[derive(Debug)]
-pub struct HexPath {
-    pub nodes: Vec<GridIndex>,
-    pub start: GridIndex,
-    pub end: GridIndex,
+#[derive(Resource, Debug)]
+pub struct HexPath<I: Indexable> {
+    pub nodes: Vec<I>,
+    pub start: I,
+    pub end: I,
+}
+
+impl<I: Indexable> HexPath<I> {
+    pub fn get_next(&self, i: I) -> Option<I> {
+        for (e, o) in self.nodes.iter().enumerate() {
+            if *o == i {
+                return self.nodes.get(e + 1).copied();
+            }
+        }
+        return None;
+    }
 }
 
 pub trait StartSelector {
@@ -81,20 +94,22 @@ pub trait SinglePathAlgorithm {
         context: PathContext<'_>,
         start: GridIndex,
         end: GridIndex,
-    ) -> Option<HexPath>;
+    ) -> Option<HexPath<GridIndex>>;
 }
 
 pub trait SinglePathFinder<S: StartSelector, E: EndSelector, A: SinglePathAlgorithm> {
-    fn get_path(&self, context: PathContext<'_>) -> Option<HexPath>;
+    fn get_path(&self, context: PathContext<'_>) -> Option<HexPath<GridIndex>>;
 }
 pub trait DistanceAwareSinglePathAlgorithm {
-    fn calculate_path_distance_aware<D: DistanceCache<Access = GridIndex, Output = u32>>(
+    fn calculate_path_distance_aware<D: DistanceCache<Access = GridIndex>>(
         &self,
         context: PathContext<'_>,
         distance_cache: D,
         start: GridIndex,
         end: GridIndex,
-    ) -> Option<HexPath>;
+    ) -> Option<HexPath<GridIndex>>
+    where
+        D::Output: DistanceValue;
 }
 
 impl<D: DistanceAwareSinglePathAlgorithm> SinglePathAlgorithm for D {
@@ -103,7 +118,7 @@ impl<D: DistanceAwareSinglePathAlgorithm> SinglePathAlgorithm for D {
         context: PathContext<'_>,
         start: GridIndex,
         end: GridIndex,
-    ) -> Option<HexPath> {
+    ) -> Option<HexPath<GridIndex>> {
         let d: HashMap<GridIndex, u32> = context
             .all_pathable()
             .map(|a| if a == start { (a, 0) } else { (a, u32::MAX) })
@@ -130,13 +145,15 @@ impl<A: SinglePathAlgorithm> DefaultSinglePathFinder<RandomSelector, RandomSelec
 impl<S: StartSelector, E: EndSelector, A: SinglePathAlgorithm> SinglePathFinder<S, E, A>
     for DefaultSinglePathFinder<S, E, A>
 {
-    fn get_path(&self, context: PathContext<'_>) -> Option<HexPath> {
+    fn get_path(&self, context: PathContext<'_>) -> Option<HexPath<GridIndex>> {
         let start = self.s.get_start(context);
         let end = self.e.get_end(context);
-        if start.is_none() || end.is_none() {
-            None
+        if let Some(s) = start
+            && let Some(e) = end
+        {
+            self.a.calculate_path(context, s, e)
         } else {
-            self.a.calculate_path(context, start.unwrap(), end.unwrap())
+            None
         }
     }
 }

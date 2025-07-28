@@ -1,20 +1,19 @@
-use crate::grid::GridIndex;
-
 use super::{
     HexPath,
     context::{Cache, CacheBehaviour},
+    dijkstra::Indexable,
 };
 
-pub trait Resolver<B: CacheBehaviour, C: Cache<B, Access = GridIndex, Output = GridIndex>> {
-    fn resolve_path(&self, cache: &C, start: GridIndex, end: GridIndex) -> Option<HexPath>;
+pub trait Resolver<I: Indexable, B: CacheBehaviour, C: Cache<B, Access = I, Output = I>> {
+    fn resolve_path(&self, cache: &C, start: I, end: I) -> Option<HexPath<I>>;
 }
 
 pub struct ShortesPathResolver;
 
-impl<B: CacheBehaviour, C: Cache<B, Access = GridIndex, Output = GridIndex>> Resolver<B, C>
+impl<I: Indexable, B: CacheBehaviour, C: Cache<B, Access = I, Output = I>> Resolver<I, B, C>
     for ShortesPathResolver
 {
-    fn resolve_path(&self, cache: &C, start: GridIndex, end: GridIndex) -> Option<HexPath> {
+    fn resolve_path(&self, cache: &C, start: I, end: I) -> Option<HexPath<I>> {
         get_shortest_path(cache, end, start).map(|n| HexPath {
             nodes: n,
             start,
@@ -23,11 +22,11 @@ impl<B: CacheBehaviour, C: Cache<B, Access = GridIndex, Output = GridIndex>> Res
     }
 }
 
-fn get_shortest_path<B: CacheBehaviour, C: Cache<B, Access = GridIndex, Output = GridIndex>>(
+fn get_shortest_path<I: Indexable, B: CacheBehaviour, C: Cache<B, Access = I, Output = I>>(
     prevs: &C,
-    end: GridIndex,
-    start: GridIndex,
-) -> Option<Vec<GridIndex>> {
+    end: I,
+    start: I,
+) -> Option<Vec<I>> {
     let mut ret = vec![end];
     let mut cur = end;
     while let Some(p) = prevs.get(&cur) {

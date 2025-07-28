@@ -1,8 +1,10 @@
 pub mod assets;
+pub mod enemy;
 pub mod grid;
 pub mod input;
 pub mod macros;
 pub mod path;
+pub mod tower;
 
 use bevy::{
     DefaultPlugins,
@@ -14,27 +16,30 @@ use bevy::{
         entity::Entity,
         query::With,
         resource::Resource,
-        schedule::IntoScheduleConfigs,
+        schedule::{Condition, IntoScheduleConfigs, SystemSet},
         system::{Commands, Query, Res, ResMut},
     },
-    input::{ButtonInput, keyboard::KeyCode, mouse::MouseButton},
     log::error,
-    render::{
-        camera::{OrthographicProjection, Projection, ScalingMode},
-        mesh::{Mesh, Mesh2d},
+    render::camera::{OrthographicProjection, Projection, ScalingMode},
+    state::{
+        app::AppExtStates,
+        condition::in_state,
+        state::{NextState, OnEnter, States},
     },
-    sprite::{ColorMaterial, MeshMaterial2d},
-    ui::widget::Text,
+    transform::components::Transform,
+    ui::{Node, Val, widget::Text},
 };
+use enemy::{Wave, init_spawn_timer, move_enemy, setup_enemy_resources, spawn_enemy};
 use grid::{
-    GridEntry, GridIndex, GridPlugin, GridSet, HexColorMap, HexGridColumns, HexGridHeight,
-    HexGridRenderRadius, HexGridRows, HexGridWidth, HexHashGrid,
+    GridEntry, GridPlugin, GridSet, HexGridColumns, HexGridHeight, HexGridRenderRadius,
+    HexGridRows, HexGridWidth, HexHashGrid,
 };
 use input::{InputPlugin, InputSet, MouseWorldPos};
 use path::{
     DefaultSinglePathFinder, PathPlugin, PathSegment, PathSet, SinglePathFinder,
-    chiseled::Chiseled, context::PathContext, dijkstra::Dijkstra, random_selected::RandomDijkstra,
+    context::PathContext, random_selected::RandomDijkstra,
 };
+use tower::{init_turret_resources, place_tower, update_projectiles, update_tower};
 
 fn main() -> bevy::app::AppExit {
     let mut app = App::new();
@@ -42,36 +47,80 @@ fn main() -> bevy::app::AppExit {
     app.add_plugins(GridPlugin::default());
     app.add_plugins(InputPlugin);
     app.add_plugins(PathPlugin);
+
+    app.insert_resource(Wave(0));
+    app.insert_state(GameState::Loading);
     app.add_systems(Startup, setup_camera.after(GridSet));
     app.add_systems(Startup, ui_overlay.after(InputSet));
-    app.add_systems(Update, generate_path.run_if(path_condition));
+    app.add_systems(Startup, (init_turret_resources, setup_enemy_resources));
+    app.add_systems(OnEnter(GameState::BeforeWave), generate_path);
     app.add_systems(Update, update_ui_overlay);
-    app.add_systems(Update, place_turret);
-    app.configure_sets(Update, (InputSet.before(GridSet), PathSet.after(GridSet)));
+    app.add_systems(
+        OnEnter(GameState::Wave),
+        (init_spawn_timer).in_set(DuringWave),
+    );
+    app.add_systems(
+        Update,
+        (spawn_enemy, move_enemy, update_tower, update_projectiles).in_set(DuringWave),
+    );
+    app.add_systems(
+        Update,
+        place_tower.run_if(in_state(GameState::Wave).or(in_state(GameState::BeforeWave))),
+    );
+    app.configure_sets(
+        Update,
+        (
+            InputSet.before(GridSet),
+            PathSet.after(GridSet),
+            DuringWave.run_if(in_state(GameState::Wave)),
+            BeforeWave.run_if(in_state(GameState::BeforeWave)),
+            AfterWave.run_if(in_state(GameState::AfterWave)),
+        ),
+    );
     app.run()
 }
 
-pub fn setup_camera(mut commands: Commands, width: Res<HexGridWidth>, height: Res<HexGridHeight>) {
+#[derive(Clone, Copy, Hash, Debug, Default, States, PartialEq, Eq)]
+pub enum GameState {
+    #[default]
+    Loading,
+    Wave,
+    BeforeWave,
+    AfterWave,
+}
+#[derive(SystemSet, Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub struct DuringWave;
+#[derive(SystemSet, Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub struct BeforeWave;
+#[derive(SystemSet, Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub struct AfterWave;
+
+pub fn setup_camera(
+    mut commands: Commands,
+    width: Res<HexGridWidth>,
+    _height: Res<HexGridHeight>,
+    mut next_state: ResMut<NextState<GameState>>,
+) {
     let mut projection = OrthographicProjection::default_2d();
     projection.scaling_mode = ScalingMode::FixedHorizontal {
         viewport_width: **width,
     };
     commands
         .spawn(Camera2d)
-        .insert(Projection::Orthographic(projection));
+        .insert(Projection::Orthographic(projection))
+        .insert(Transform::from_xyz(0.0, -150.0, 0.0));
+    next_state.set(GameState::BeforeWave);
 }
 
-pub fn path_condition(input: Res<ButtonInput<KeyCode>>) -> bool {
-    input.just_pressed(KeyCode::KeyP)
-}
+#[allow(clippy::too_many_arguments)]
 pub fn generate_path(
     mut commands: Commands,
     mut grid: ResMut<HexHashGrid>,
     old: Query<Entity, With<PathSegment>>,
-    colors: Res<HexColorMap>,
     rows: Res<HexGridRows>,
     columns: Res<HexGridColumns>,
     render_radius: Res<HexGridRenderRadius>,
+    mut next_state: ResMut<NextState<GameState>>,
 ) {
     for g in grid.values_mut() {
         if g.0 == GridEntry::PathEnd || g.0 == GridEntry::PathStart || g.0 == GridEntry::Path {
@@ -81,56 +130,47 @@ pub fn generate_path(
     for o in old {
         commands.entity(o).despawn();
     }
-    let path_finder = DefaultSinglePathFinder::new(RandomDijkstra);
+    let path_finder = DefaultSinglePathFinder::new(RandomDijkstra {
+        tile_size: **render_radius,
+    });
     let context = PathContext::from_args(&rows, &columns, &grid);
     let path = path_finder.get_path(context);
     if let Some(pa) = path {
-        let prev = pa.start;
-
-        for p in pa.nodes {
-            if prev != p {
-                commands.spawn(PathSegment {
-                    start: prev.to_world_pos(**render_radius),
-                    end: p.to_world_pos(**render_radius),
-                    color: colors.debug_color(),
-                });
-            }
-            if p == pa.start {
-                grid[p].0 = GridEntry::PathStart;
-            } else if p == pa.end {
-                grid[p].0 = GridEntry::PathEnd;
+        for p in &pa.nodes {
+            if *p == pa.start {
+                grid[*p].0 = GridEntry::PathStart;
+            } else if *p == pa.end {
+                grid[*p].0 = GridEntry::PathEnd;
             } else {
-                grid[p].0 = GridEntry::Path
+                grid[*p].0 = GridEntry::Path
             }
         }
+        commands.insert_resource(pa);
+        next_state.set(GameState::Wave)
     } else {
         error!("Failed to find path");
     }
 }
 
-pub fn place_turret(
-    mouse_position: Res<MouseWorldPos>,
-    input: Res<ButtonInput<MouseButton>>,
-    mut grid: ResMut<HexHashGrid>,
-    size: Res<HexGridRenderRadius>,
-) {
-    if input.just_pressed(MouseButton::Left)
-        && let Some(p) = **mouse_position
-        && grid.contains(&GridIndex::from_world_pos(p, **size))
-    {
-        grid[GridIndex::from_world_pos(p, **size)].0 = GridEntry::Tower;
-    }
-}
-
 #[derive(Component)]
 pub struct MousePositionText;
+
 fn ui_overlay(mut commands: Commands, mouse_position: Res<MouseWorldPos>) {
     let text = if let Some(p) = **mouse_position {
         format!("mouse: {},{}", p.x, p.y)
     } else {
         "mouse: None".to_string()
     };
-    commands.spawn((Text::new(text), MousePositionText));
+    commands.spawn((
+        Text::new(text),
+        MousePositionText,
+        Node {
+            position_type: bevy::ui::PositionType::Absolute,
+            top: Val::Px(10.0),
+            left: Val::Px(10.0),
+            ..Default::default()
+        },
+    ));
 }
 
 fn update_ui_overlay(

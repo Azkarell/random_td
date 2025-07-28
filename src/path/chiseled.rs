@@ -4,10 +4,7 @@ use rand::rng;
 use crate::grid::{GridIndex, HexHashGrid};
 
 use super::{
-    HexPath, SinglePathAlgorithm,
-    context::PathContext,
-    dijkstra::{self, Dijkstra},
-    random::choose_from_vec,
+    HexPath, SinglePathAlgorithm, context::PathContext, dijkstra::Dijkstra, random::choose_from_vec,
 };
 
 pub struct Chiseled;
@@ -18,14 +15,14 @@ impl SinglePathAlgorithm for Chiseled {
         context: PathContext<'_>,
         start: GridIndex,
         end: GridIndex,
-    ) -> Option<super::HexPath> {
+    ) -> Option<super::HexPath<GridIndex>> {
         let mut rng = rng();
         let mut path: Vec<GridIndex> = context.all().filter(|a| context.can_be_path(a)).collect();
 
         let mut current = choose_from_vec(&mut path, &mut rng);
 
         while let Some(ga) = current {
-            let hex_path = HexPath {
+            let hex_path = HexPath::<GridIndex> {
                 end,
                 start,
                 nodes: path.clone(),
@@ -49,7 +46,7 @@ impl SinglePathAlgorithm for Chiseled {
     }
 }
 
-fn is_valid_path(path: &HexPath, context: PathContext) -> bool {
+fn is_valid_path(path: &HexPath<GridIndex>, context: PathContext) -> bool {
     let dijkstra = Dijkstra;
     let grid = HexHashGrid::from_path(path);
     let context = context.with_grid(&grid);

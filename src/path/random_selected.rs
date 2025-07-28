@@ -1,5 +1,3 @@
-use std::num;
-
 use bevy::{
     log::info,
     platform::collections::{HashMap, HashSet},
@@ -10,8 +8,7 @@ use crate::grid::{GridDirections, GridIndex};
 
 use super::{
     HexPath, SinglePathAlgorithm,
-    context::Cache,
-    dijkstra::{Dijkstra, MutTileStateCache, TileStateCache},
+    dijkstra::{ConstOneDF, Dijkstra, DistanceFunction, MutTileStateCache, TileStateCache},
     resolver::ShortesPathResolver,
 };
 
@@ -23,7 +20,7 @@ impl SinglePathAlgorithm for TotalRandom {
         context: super::context::PathContext<'_>,
         start: crate::grid::GridIndex,
         end: crate::grid::GridIndex,
-    ) -> Option<super::HexPath> {
+    ) -> Option<super::HexPath<GridIndex>> {
         let mut rng = rng();
         let mut cur = Some(start);
         let mut path = vec![];
@@ -51,27 +48,31 @@ impl SinglePathAlgorithm for TotalRandom {
     }
 }
 
-pub struct RandomDijkstra;
+pub struct WorldDistance {
+    size: f32,
+}
+
+impl DistanceFunction<GridIndex, f32> for WorldDistance {
+    fn get_distance(&self, rhs: &GridIndex, lhs: &GridIndex) -> f32 {
+        (rhs.to_world_pos(self.size) - lhs.to_world_pos(self.size)).length()
+    }
+}
+pub struct RandomDijkstra {
+    pub tile_size: f32,
+}
+
 impl SinglePathAlgorithm for RandomDijkstra {
     fn calculate_path(
         &self,
         context: super::context::PathContext<'_>,
         start: crate::grid::GridIndex,
         end: crate::grid::GridIndex,
-    ) -> Option<HexPath> {
+    ) -> Option<HexPath<GridIndex>> {
         let mut rng = rng();
         let mut path = vec![];
         let mut tile_state = context.tile_state(start, end);
 
-        // let points = context
-        //     .all()
-        //     .filter(|i| context.can_be_path(i) && *i != start && *i != end)
-        //     .choose_multiple(&mut rng, rand::random_range(2usize..=5usize));
         let dijkstra = Dijkstra;
-        // let mut tmp = vec![start];
-        // tmp.extend_from_slice(&points);
-        // tmp.push(end);
-        //tmp.sort_by(|l, r| l.q.cmp(&r.q));
         let num_points = random_range(1..=3usize);
         let mut c_start = start;
         for i in 0..=num_points {
@@ -81,15 +82,23 @@ impl SinglePathAlgorithm for RandomDijkstra {
             if i == num_points {
                 c_end = end;
             }
-            let mut distances: HashMap<GridIndex, u32> = tile_state.get_initial_distances(&c_start);
+            let mut distances: HashMap<GridIndex, f32> = tile_state.get_initial_distances(&c_start);
             let mut prevs: HashMap<GridIndex, GridIndex> = HashMap::new();
+            let fun = &WorldDistance {
+                size: self.tile_size,
+            };
             let mut data = dijkstra.create_data(
                 &mut prevs,
                 &mut distances,
                 &ShortesPathResolver,
                 &tile_state,
+                fun,
             );
-            let hex_path = data.run(c_start, c_end);
+            let hex_path = data.run(
+                c_start,
+                c_end,
+                GridDirections::VARIANTS.into_iter().map(|i| i.get()),
+            );
             if let Some(p) = hex_path {
                 for n in &p.nodes {
                     if *n != c_end {
@@ -99,12 +108,7 @@ impl SinglePathAlgorithm for RandomDijkstra {
                 }
                 c_start = c_end;
             } else {
-                info!("its none!");
-                return Some(HexPath {
-                    nodes: path,
-                    start,
-                    end,
-                });
+                continue;
             }
         }
         path.push(end);
