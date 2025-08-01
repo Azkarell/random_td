@@ -9,24 +9,15 @@ pub mod steps;
 use crate::grid::GridIndex;
 use bevy::{
     app::Plugin,
-    asset::{Assets, Handle},
-    ecs::{
-        component::Component,
-        entity::Entity,
-        query::Added,
-        resource::Resource,
-        schedule::SystemSet,
-        system::{Commands, Query, ResMut},
-    },
+    asset::Handle,
+    ecs::{component::Component, resource::Resource, schedule::SystemSet},
     log::info,
-    math::{Vec2, primitives::Rectangle},
+    math::Vec2,
     platform::collections::HashMap,
-    render::mesh::{Mesh, Mesh2d, Meshable},
-    sprite::{ColorMaterial, MeshMaterial2d},
-    transform::components::Transform,
+    sprite::ColorMaterial,
 };
 use context::{DistanceCache, PathContext};
-use dijkstra::{DistanceValue, Indexable};
+use dijkstra::{DistanceValue, Indexable, TileStateCache};
 use random::RandomSelector;
 
 #[derive(Component, Debug)]
@@ -39,29 +30,29 @@ pub struct PathSegment {
 pub struct PathPlugin;
 
 impl Plugin for PathPlugin {
-    fn build(&self, app: &mut bevy::app::App) {
+    fn build(&self, _app: &mut bevy::app::App) {
         // app.add_systems(Update, update_segments.in_set(PathSet));
     }
 }
 #[derive(SystemSet, PartialEq, Eq, Clone, Copy, Hash, Debug)]
 pub struct PathSet;
 
-fn update_segments(
-    mut commands: Commands,
-    query: Query<(Entity, &PathSegment), Added<PathSegment>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-) {
-    for (e, p) in query {
-        let square = Rectangle::new((p.start.x - p.end.x).abs(), (p.start.y - p.end.y).abs());
-        let m = meshes.add(square.mesh());
-        info!("inserting {p:?}");
-        commands.entity(e).insert((
-            Mesh2d(m),
-            MeshMaterial2d(p.color.clone()),
-            Transform::from_xyz(p.start.x, p.start.y, 20.0),
-        ));
-    }
-}
+// fn update_segments(
+//     mut commands: Commands,
+//     query: Query<(Entity, &PathSegment), Added<PathSegment>>,
+//     mut meshes: ResMut<Assets<Mesh>>,
+// ) {
+//     for (e, p) in query {
+//         let square = Rectangle::new((p.start.x - p.end.x).abs(), (p.start.y - p.end.y).abs());
+//         let m = meshes.add(square.mesh());
+//         info!("inserting {p:?}");
+//         commands.entity(e).insert((
+//             Mesh2d(m),
+//             MeshMaterial2d(p.color.clone()),
+//             Transform::from_xyz(p.start.x, p.start.y, 20.0),
+//         ));
+//     }
+// }
 
 #[derive(Resource, Debug)]
 pub struct HexPath<I: Indexable> {
@@ -77,7 +68,10 @@ impl<I: Indexable> HexPath<I> {
                 return self.nodes.get(e + 1).copied();
             }
         }
-        return None;
+        None
+    }
+    pub fn contains(&self, i: &I) -> bool {
+        self.nodes.contains(i)
     }
 }
 
@@ -119,10 +113,8 @@ impl<D: DistanceAwareSinglePathAlgorithm> SinglePathAlgorithm for D {
         start: GridIndex,
         end: GridIndex,
     ) -> Option<HexPath<GridIndex>> {
-        let d: HashMap<GridIndex, u32> = context
-            .all_pathable()
-            .map(|a| if a == start { (a, 0) } else { (a, u32::MAX) })
-            .collect();
+        let d: HashMap<GridIndex, u32> =
+            context.tile_state(start, end).get_initial_distances(&start);
         self.calculate_path_distance_aware(context, d, start, end)
     }
 }
@@ -151,6 +143,7 @@ impl<S: StartSelector, E: EndSelector, A: SinglePathAlgorithm> SinglePathFinder<
         if let Some(s) = start
             && let Some(e) = end
         {
+            info!("finding path from {s:?} to {e:?}");
             self.a.calculate_path(context, s, e)
         } else {
             None

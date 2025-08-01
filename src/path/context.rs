@@ -4,7 +4,7 @@ use std::hash::Hash;
 
 use crate::grid::{GridEntry, GridIndex, HexGridColumns, HexGridRows, HexHashGrid};
 
-use super::dijkstra::{DistanceFunction, TileState};
+use super::dijkstra::TileState;
 
 #[derive(Clone, Copy)]
 pub struct PathContext<'a> {
@@ -80,7 +80,7 @@ impl<'a> PathContext<'a> {
     }
 
     pub fn can_be_path_ending(&self, index: GridIndex) -> bool {
-        self.grid[index].0 == GridEntry::None
+        self.grid[index] == GridEntry::None
     }
 }
 

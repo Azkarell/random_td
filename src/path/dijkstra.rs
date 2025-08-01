@@ -145,7 +145,7 @@ impl<Index: Indexable, C: Cache<InsertMissingEntries, Access = Index, Output = T
 }
 
 pub trait MutTileStateCache<Index: Indexable>: TileStateCache<Index> {
-    fn set_is_blocked(&mut self, access: &GridIndex);
+    fn set_state(&mut self, access: &GridIndex, value: TileState);
 }
 
 impl<
@@ -153,8 +153,8 @@ impl<
     C: Cache<InsertMissingEntries, Access = GridIndex, Output = TileState> + TileStateCache<Index>,
 > MutTileStateCache<Index> for C
 {
-    fn set_is_blocked(&mut self, access: &GridIndex) {
-        self.update(access, TileState::Blocked, |_| true);
+    fn set_state(&mut self, access: &GridIndex, value: TileState) {
+        self.update(access, value, |_| true);
     }
 }
 
@@ -270,5 +270,40 @@ fn get_min<I: Indexable, DT: DistanceValue, D: DistanceCache<Access = I, Output 
         Some(m)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use crate::{
+        grid::{HexGridColumns, HexGridRows, HexHashGrid},
+        path::SinglePathAlgorithm,
+    };
+
+    use super::*;
+
+    fn hex_column() -> HexGridColumns {
+        HexGridColumns(10)
+    }
+    fn hex_rows() -> HexGridRows {
+        HexGridRows(10)
+    }
+    fn create_test_data() -> HexHashGrid {
+        HexHashGrid::from_rows_and_columns_with_init(&hex_column(), &hex_rows(), |_| {})
+    }
+
+    #[test]
+    fn dijkstra_should_work() {
+        let dijkstra = Dijkstra;
+        let grid = create_test_data();
+        let column = hex_column();
+        let rows = hex_rows();
+        let context = PathContext::from_args(&rows, &column, &grid);
+        let start = context.iter_start_column().next().unwrap();
+        let end = context.iter_end_column().last().unwrap();
+
+        let path = dijkstra.calculate_path(context, start, end);
+        assert!(path.is_some());
     }
 }

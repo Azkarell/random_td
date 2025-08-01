@@ -4,31 +4,39 @@ use std::{
 };
 
 use bevy::{
-    app::{Plugin, Startup, Update},
-    asset::{AssetServer, Assets, Handle},
+    app::{Plugin, Startup},
+    asset::{Assets, Handle},
     color::Color,
     ecs::{
-        component::Component,
         entity::Entity,
-        resource::Resource,
-        schedule::{IntoScheduleConfigs, SystemSet},
+        hierarchy::ChildOf,
+        observer::Trigger,
+        schedule::IntoScheduleConfigs,
         system::{Commands, Query, Res, ResMut},
     },
     log::info,
     math::{Mat2, Vec2, Vec3, Vec3Swizzles, ops::sqrt, primitives::RegularPolygon},
-    platform::collections::HashMap,
-    prelude::{Deref, DerefMut},
+    picking::{
+        Pickable,
+        events::{Out, Over, Pointer},
+    },
+    platform::collections::{HashMap, HashSet},
+    prelude::*,
     render::mesh::{Mesh, Mesh2d},
-    sprite::{ColorMaterial, MeshMaterial2d},
-    text::{Text2d, TextColor, TextFont},
+    sprite::{ColorMaterial, ColorMaterialUniform, MeshMaterial2d},
     transform::components::Transform,
 };
 
 use crate::{
-    assets::{FONT, FONT_COLOR, FONT_SIZE, PATH_DEBUG_COLOR},
+    assets::{
+        DEFAULT_HEX_COLOR, HOVER_TINT_COLOR, PATH_COLOR, PATH_DEBUG_COLOR, PATH_END_COLOR,
+        PATH_START_COLOR, TOWER_COST,
+    },
     def_enum,
-    input::MouseWorldPos,
+    enemy::{Enemy, EnemyMoved},
     path::HexPath,
+    player::{Gold, Player},
+    tower::{BaseTowerImage, spawn_tower_at},
 };
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GridSet;
@@ -54,23 +62,26 @@ impl Plugin for GridPlugin {
         app.insert_resource(HexGridRenderRadius(
             ((self.column_width) / 2.0) - 2.0 * self.padding,
         ));
-        app.insert_resource(HexColorMap::default());
+        app.insert_resource(HexSpatialGrid::default());
         app.add_systems(
             Startup,
             (prepare_colors_materials, init_grid)
                 .chain()
                 .in_set(GridSet),
         );
-        app.add_systems(Update, update_color.in_set(GridSet));
+        app.add_observer(on_enemy_moved);
+        app.add_observer(on_enemy_removed);
+        //app.add_systems(Update, update_color.in_set(GridSet));
     }
 }
+
 impl Default for GridPlugin {
     fn default() -> Self {
         Self {
             column_width: 120.0,
             row_width: 120.0,
-            columns: 20,
-            rows: 20,
+            columns: 15,
+            rows: 10,
             margin: 2.0,
             padding: 16.0,
         }
@@ -84,101 +95,122 @@ impl From<(GridEntry, GridEntryState)> for HexGridEntryState {
         Self(value.0, value.1)
     }
 }
-#[derive(Resource)]
-pub struct HexColorMap {
-    colors: HashMap<HexGridEntryState, Color>,
-    default_color: Color,
-    materials: HashMap<HexGridEntryState, Handle<ColorMaterial>>,
-    path_debug_color: Handle<ColorMaterial>,
-}
-
-impl Default for HexColorMap {
-    fn default() -> Self {
-        let default_color = Color::hsla(0.0, 1.0, 0.95, 1.0);
-
-        let mut map = HashMap::new();
-        let highlight_color = Color::hsla(0.5, 0.5, 0.3, 1.0);
-        map.insert(
-            HexGridEntryState(GridEntry::None, GridEntryState::Highlight),
-            highlight_color,
-        );
-        map.insert(
-            HexGridEntryState(GridEntry::Tower, GridEntryState::Normal),
-            Color::hsla(180.0, 0.5, 0.8, 1.0),
-        );
-        map.insert(
-            HexGridEntryState(GridEntry::Tower, GridEntryState::Highlight),
-            Color::hsla(180.0, 0.5, 0.8, 1.0),
-        );
-        map.insert(
-            HexGridEntryState(GridEntry::Path, GridEntryState::Normal),
-            Color::hsla(0.3, 0.5, 0.8, 1.0),
-        );
-        map.insert(
-            HexGridEntryState(GridEntry::Path, GridEntryState::Highlight),
-            Color::hsla(0.3, 0.5, 0.8, 1.0),
-        );
-        map.insert(
-            HexGridEntryState(GridEntry::PathStart, GridEntryState::Normal),
-            Color::hsla(0.8, 0.78, 0.3, 1.0),
-        );
-        map.insert(
-            HexGridEntryState(GridEntry::PathStart, GridEntryState::Highlight),
-            Color::hsla(0.8, 0.78, 0.3, 1.0),
-        );
-        map.insert(
-            HexGridEntryState(GridEntry::PathEnd, GridEntryState::Normal),
-            Color::hsla(0.8, 0.78, 0.4, 1.0),
-        );
-        map.insert(
-            HexGridEntryState(GridEntry::PathEnd, GridEntryState::Highlight),
-            Color::hsla(0.8, 0.78, 0.4, 1.0),
-        );
-        Self {
-            colors: map,
-            default_color,
-            materials: HashMap::new(),
-            path_debug_color: Handle::default(),
-        }
-    }
-}
-
-impl HexColorMap {
-    pub fn get_color(&self, key: &HexGridEntryState) -> Color {
-        self.colors.get(key).cloned().unwrap_or(self.default_color)
-    }
-
-    pub fn prepare_materials(
-        &mut self,
-        assets: &mut Assets<ColorMaterial>,
-    ) -> Handle<ColorMaterial> {
-        for (k, v) in self.colors.iter() {
-            self.materials.insert(*k, assets.add(*v));
-        }
-        self.path_debug_color = assets.add(PATH_DEBUG_COLOR);
-
-        assets.add(self.default_color)
-    }
-
-    pub fn get_handle(&self, k: &HexGridEntryState) -> Option<Handle<ColorMaterial>> {
-        self.materials.get(k).cloned()
-    }
-
-    pub fn debug_color(&self) -> Handle<ColorMaterial> {
-        self.path_debug_color.clone()
-    }
-}
+//#[derive(Resource)]
+//pub struct HexColorMap {
+//    colors: HashMap<HexGridEntryState, Color>,
+//    default_color: Color,
+//    materials: HashMap<HexGridEntryState, Handle<ColorMaterial>>,
+//    path_debug_color: Handle<ColorMaterial>,
+//    hover_tint_color: Handle<ColorMaterial>,
+//}
+//
+//impl Default for HexColorMap {
+//    fn default() -> Self {
+//        let default_color = Color::hsla(0.0, 1.0, 0.95, 1.0);
+//
+//        let mut map = HashMap::new();
+//        let highlight_color = Color::hsla(0.5, 0.5, 0.3, 1.0);
+//        map.insert(
+//            HexGridEntryState(GridEntry::None, GridEntryState::Highlight),
+//            highlight_color,
+//        );
+//        map.insert(
+//            HexGridEntryState(GridEntry::Tower, GridEntryState::Normal),
+//            Color::hsla(180.0, 0.5, 0.8, 1.0),
+//        );
+//        map.insert(
+//            HexGridEntryState(GridEntry::Tower, GridEntryState::Highlight),
+//            Color::hsla(180.0, 0.5, 0.8, 1.0),
+//        );
+//        map.insert(
+//            HexGridEntryState(GridEntry::Path, GridEntryState::Normal),
+//            Color::hsla(0.3, 0.5, 0.8, 1.0),
+//        );
+//        map.insert(
+//            HexGridEntryState(GridEntry::Path, GridEntryState::Highlight),
+//            Color::hsla(0.3, 0.5, 0.8, 1.0),
+//        );
+//        map.insert(
+//            HexGridEntryState(GridEntry::PathStart, GridEntryState::Normal),
+//            Color::hsla(0.8, 0.78, 0.3, 1.0),
+//        );
+//        map.insert(
+//            HexGridEntryState(GridEntry::PathStart, GridEntryState::Highlight),
+//            Color::hsla(0.8, 0.78, 0.3, 1.0),
+//        );
+//        map.insert(
+//            HexGridEntryState(GridEntry::PathEnd, GridEntryState::Normal),
+//            Color::hsla(0.8, 0.78, 0.4, 1.0),
+//        );
+//        map.insert(
+//            HexGridEntryState(GridEntry::PathEnd, GridEntryState::Highlight),
+//            Color::hsla(0.8, 0.78, 0.4, 1.0),
+//        );
+//        Self {
+//            colors: map,
+//            default_color,
+//            materials: HashMap::new(),
+//            path_debug_color: Handle::default(),
+//            hover_tint_color: Handle::default(),
+//        }
+//    }
+//}
+//
+//impl HexColorMap {
+//    pub fn get_color(&self, key: &HexGridEntryState) -> Color {
+//        self.colors.get(key).cloned().unwrap_or(self.default_color)
+//    }
+//    pub fn prepare_materials(
+//        &mut self,
+//        assets: &mut Assets<ColorMaterial>,
+//    ) -> Handle<ColorMaterial> {
+//        for (k, v) in self.colors.iter() {
+//            self.materials.insert(*k, assets.add(*v));
+//        }
+//        self.path_debug_color = assets.add(PATH_DEBUG_COLOR);
+//        self.hover_tint_color = assets.add(HOVER_TINT_COLOR);
+//
+//        assets.add(self.default_color)
+//    }
+//
+//    pub fn get_handle(&self, k: &HexGridEntryState) -> Option<Handle<ColorMaterial>> {
+//        self.materials.get(k).cloned()
+//    }
+//
+//    pub fn debug_color(&self) -> Handle<ColorMaterial> {
+//        self.path_debug_color.clone()
+//    }
+//}
 
 #[derive(Resource, Deref, DerefMut)]
 pub struct DefaultHexMaterial(pub Handle<ColorMaterial>);
+#[derive(Resource, Deref, DerefMut)]
+pub struct PathStartMaterial(pub Handle<ColorMaterial>);
+#[derive(Resource, Deref, DerefMut)]
+pub struct PathEndMaterial(pub Handle<ColorMaterial>);
+#[derive(Resource, Deref, DerefMut)]
+pub struct PathMaterial(pub Handle<ColorMaterial>);
+
+#[derive(Resource, Deref, DerefMut)]
+pub struct HoverTintMaterial(pub Handle<ColorMaterial>);
+#[derive(Resource, Deref, DerefMut)]
+pub struct Hexagon(pub Handle<Mesh>);
+
 pub fn prepare_colors_materials(
     mut commands: Commands,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    mut colors: ResMut<HexColorMap>,
 ) {
     info!("Preparing colors");
-    let default_material = colors.prepare_materials(&mut materials);
+    let default_material = materials.add(DEFAULT_HEX_COLOR);
+    let hover_tint_color = materials.add(HOVER_TINT_COLOR);
+    let path_start_material = materials.add(PATH_START_COLOR);
+    let path_end_material = materials.add(PATH_END_COLOR);
+    let path_material = materials.add(PATH_COLOR);
     commands.insert_resource(DefaultHexMaterial(default_material));
+    commands.insert_resource(HoverTintMaterial(hover_tint_color));
+    commands.insert_resource(PathStartMaterial(path_start_material));
+    commands.insert_resource(PathEndMaterial(path_end_material));
+    commands.insert_resource(PathMaterial(path_material));
     info!("done...");
 }
 
@@ -186,85 +218,140 @@ pub fn prepare_colors_materials(
 pub fn init_grid(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    asset_server: Res<AssetServer>,
+    //asset_server: Res<AssetServer>,
     cirumradius: Res<HexGridCirumRadius>,
     render_radius: Res<HexGridRenderRadius>,
     columns: Res<HexGridColumns>,
     rows: Res<HexGridRows>,
     default_color: Res<DefaultHexMaterial>,
-    mut grid: ResMut<HexHashGrid>,
 ) {
-    let font = asset_server.load(FONT);
-    let text_font = TextFont {
-        font,
-        font_size: FONT_SIZE,
-        ..Default::default()
-    };
+    //let font = asset_server.load(FONT);
+    //let text_font = TextFont {
+    //    font,
+    //    font_size: FONT_SIZE,
+    //    ..Default::default()
+    //};
     let hexagon = meshes.add(RegularPolygon::new(**cirumradius, 6));
-
-    for r in columns.get_actual_column_count() {
-        let range = rows.get_actual_row_count(r);
-        for q in range {
-            let coords = GridIndex { q, r };
-            let pos = coords.to_world_pos(**render_radius);
-            grid[coords] = HexGridEntryState(GridEntry::None, GridEntryState::Normal);
-            commands.spawn((
+    commands.insert_resource(Hexagon(hexagon.clone()));
+    let grid = HexHashGrid::from_rows_and_columns_with_init(&columns, &rows, |coords| {
+        let pos = coords.to_world_pos(**render_radius);
+        commands
+            .spawn((
                 Mesh2d(hexagon.clone()),
                 MeshMaterial2d(default_color.clone()),
                 Transform::from_xyz(pos.x, pos.y, 0.0),
                 GridEntity(coords),
-                Text2d(format!("q:{q}\nr:{r}")),
-                text_font.clone(),
-                TextColor(FONT_COLOR),
-            ));
-        }
-    }
+                Pickable::default(),
+            ))
+            .observe(on_hex_hover)
+            .observe(on_hex_out)
+            .observe(on_hex_click);
+    });
+    commands.insert_resource(grid);
 }
 
-pub fn update_color(
+#[derive(Component)]
+pub struct Hover;
+
+pub fn on_hex_hover(
+    trigger: Trigger<Pointer<Over>>,
     mut commands: Commands,
-    world_pos: Res<MouseWorldPos>,
-    size: Res<HexGridRenderRadius>,
-    q_entries: Query<(Entity, &GridEntity, &mut MeshMaterial2d<ColorMaterial>)>,
-    colors: Res<HexColorMap>,
-    mut hex_grid: ResMut<HexHashGrid>,
-    path: Res<HexPath<GridIndex>>,
-    default_color: Res<DefaultHexMaterial>,
+    hexagon: Res<Hexagon>,
+    hover_tint: Res<HoverTintMaterial>,
 ) {
-    let access = world_pos.0.map(|p| GridIndex::from_world_pos(p, **size));
+    let e = commands
+        .spawn((
+            Hover,
+            Mesh2d(hexagon.0.clone()),
+            MeshMaterial2d(hover_tint.0.clone()),
+            Transform::IDENTITY,
+            Pickable::IGNORE,
+        ))
+        .id();
+    commands.entity(trigger.target).add_child(e);
+}
 
-    if let Some(p) = access {
-        for (entity, e, mut mat) in q_entries {
-            if e.0 == path.start {
-                commands.entity(entity).insert_if_new(PathStart(e.0));
-            }
-            if e.0 == path.end {
-                commands.entity(entity).insert_if_new(PathEnd(e.0));
-            }
-            let state = &mut hex_grid[e.0];
-            if e.0 != p {
-                state.1 = GridEntryState::Normal;
-            } else {
-                state.1 = GridEntryState::Highlight;
-            }
-            let color_handle = colors.get_handle(state).unwrap_or(default_color.clone());
-            **mat = color_handle;
-        }
-    } else {
-        for (entity, e, mut mat) in q_entries {
-            if e.0 == path.start {
-                commands.entity(entity).insert_if_new(PathStart(e.0));
-            }
-            if e.0 == path.end {
-                commands.entity(entity).insert_if_new(PathEnd(e.0));
-            }
-            let state = &mut hex_grid[e.0];
-            state.1 = GridEntryState::Normal;
-            let color_handle = colors.get_handle(state).unwrap_or(default_color.clone());
-            **mat = color_handle;
+pub fn on_hex_out(
+    trigger: Trigger<Pointer<Out>>,
+    mut commands: Commands,
+    query: Query<(Entity, &ChildOf), With<Hover>>,
+) {
+    for q in query {
+        if q.1.parent() == trigger.target {
+            commands.entity(q.0).despawn();
         }
     }
 }
+
+pub fn on_hex_click(
+    mut trigger: Trigger<Pointer<Click>>,
+    commands: Commands,
+    base_tower_image: Res<BaseTowerImage>,
+    mut hex_grid: ResMut<HexHashGrid>,
+    mut player_gold: Single<&mut Gold, With<Player>>,
+    grid_query: Query<&GridEntity>,
+) {
+    if let Ok(index) = grid_query.get(trigger.target)
+        && hex_grid[index.0] == GridEntry::None
+        && spawn_tower_at(
+            trigger.target,
+            commands,
+            base_tower_image,
+            &Gold(TOWER_COST),
+            &mut player_gold,
+        )
+    {
+        info!("set tower: {:?}", index.0);
+        hex_grid[index.0] = GridEntry::Tower;
+    }
+    trigger.propagate(true);
+}
+
+//#[allow(clippy::too_many_arguments)]
+//pub fn update_color(
+//    mut commands: Commands,
+//    world_pos: Res<MouseWorldPos>,
+//    size: Res<HexGridRenderRadius>,
+//    q_entries: Query<(Entity, &GridEntity, &mut MeshMaterial2d<ColorMaterial>)>,
+//    colors: Res<HexColorMap>,
+//    mut hex_grid: ResMut<HexHashGrid>,
+//    path: Res<HexPath<GridIndex>>,
+//    default_color: Res<DefaultHexMaterial>,
+//) {
+//    let access = world_pos.0.map(|p| GridIndex::from_world_pos(p, **size));
+//
+//    if let Some(p) = access {
+//        for (entity, e, mut mat) in q_entries {
+//            if e.0 == path.start {
+//                commands.entity(entity).insert_if_new(PathStart(e.0));
+//            }
+//            if e.0 == path.end {
+//                commands.entity(entity).insert_if_new(PathEnd(e.0));
+//            }
+//            let state = &mut hex_grid[e.0];
+//            if e.0 != p {
+//                state.1 = GridEntryState::Normal;
+//            } else {
+//                state.1 = GridEntryState::Highlight;
+//            }
+//            let color_handle = colors.get_handle(state).unwrap_or(default_color.clone());
+//            **mat = color_handle;
+//        }
+//    } else {
+//        for (entity, e, mut mat) in q_entries {
+//            if e.0 == path.start {
+//                commands.entity(entity).insert_if_new(PathStart(e.0));
+//            }
+//            if e.0 == path.end {
+//                commands.entity(entity).insert_if_new(PathEnd(e.0));
+//            }
+//            let state = &mut hex_grid[e.0];
+//            state.1 = GridEntryState::Normal;
+//            let color_handle = colors.get_handle(state).unwrap_or(default_color.clone());
+//            **mat = color_handle;
+//        }
+//    }
+//}
 pub fn axial_to_cube(vec: Vec2) -> Vec3 {
     Vec3::new(vec.x, vec.y, -vec.x - vec.y)
 }
@@ -292,13 +379,65 @@ pub fn cube_round(vec: Vec3) -> Vec3 {
     }
     rounded
 }
-#[derive(Component, Deref)]
-pub struct PathStart(pub GridIndex);
-#[derive(Component, Deref)]
-pub struct PathEnd(pub GridIndex);
+#[derive(Component)]
+pub struct PathStart;
+#[derive(Component)]
+pub struct PathEnd;
+#[derive(Component)]
+pub struct Path;
 #[derive(Resource)]
 pub struct HexHashGrid {
-    data: HashMap<GridIndex, HexGridEntryState>,
+    data: HashMap<GridIndex, GridEntry>,
+}
+#[derive(Resource, Default)]
+pub struct HexSpatialGrid {
+    data: HashMap<GridIndex, HashSet<Entity>>,
+    entries: HashMap<Entity, GridIndex>,
+}
+
+impl HexSpatialGrid {
+    pub fn update(&mut self, index: GridIndex, entity: Entity) {
+        self.entries
+            .entry(entity)
+            .and_modify(|i| {
+                self.data.entry(*i).and_modify(|s| {
+                    s.remove(&entity);
+                });
+                *i = index;
+            })
+            .or_insert(index);
+
+        self.data
+            .entry(index)
+            .and_modify(|s| {
+                s.insert(entity);
+            })
+            .or_insert_with(|| {
+                let mut hs = HashSet::new();
+                hs.insert(entity);
+                hs
+            });
+    }
+
+    pub fn get_nearby(&mut self, index: &GridIndex) -> impl Iterator<Item = Entity> {
+        let directions = GridDirections::VARIANTS.iter().map(|d| d.get());
+
+        let mut initial_set = self.data.entry(*index).or_default().clone();
+        for d in directions {
+            initial_set.extend(self.data.entry(*index + d).or_default().iter().cloned());
+        }
+        initial_set.into_iter()
+    }
+
+    pub fn remove(&mut self, entity: Entity) {
+        let Some(position) = self.entries.remove(&entity) else {
+            return;
+        };
+
+        self.data.entry(position).and_modify(|s| {
+            s.remove(&entity);
+        });
+    }
 }
 
 #[derive(Component)]
@@ -311,6 +450,7 @@ impl HexHashGrid {
             data: HashMap::new(),
         }
     }
+
     pub fn from_path(path: &HexPath<GridIndex>) -> Self {
         Self {
             data: path
@@ -319,16 +459,13 @@ impl HexHashGrid {
                 .map(|a| {
                     (
                         *a,
-                        HexGridEntryState(
-                            if *a == path.start {
-                                GridEntry::PathStart
-                            } else if *a == path.end {
-                                GridEntry::PathEnd
-                            } else {
-                                GridEntry::Path
-                            },
-                            GridEntryState::Normal,
-                        ),
+                        if *a == path.start {
+                            GridEntry::PathStart
+                        } else if *a == path.end {
+                            GridEntry::PathEnd
+                        } else {
+                            GridEntry::Path
+                        },
                     )
                 })
                 .collect(),
@@ -347,16 +484,40 @@ impl HexHashGrid {
         if self.data.get(a).is_none() {
             return false;
         }
-        self.data[a].0 == GridEntry::None || self.data[a].0 == GridEntry::Path
+        self.data[a] == GridEntry::None || self.data[a] == GridEntry::Path
     }
 
     pub fn set_entry(&mut self, key: GridIndex, entry: GridEntry) {
         let old = &mut self[key];
-        old.0 = entry;
+        *old = entry;
+    }
+    pub fn clear_path(&mut self) {
+        self.data.values_mut().for_each(|e| {
+            if *e == GridEntry::Path || *e == GridEntry::PathStart || *e == GridEntry::PathEnd {
+                *e = GridEntry::None
+            }
+        });
     }
 
-    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut HexGridEntryState> {
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut GridEntry> {
         self.data.values_mut()
+    }
+
+    pub fn from_rows_and_columns_with_init(
+        columns: &HexGridColumns,
+        rows: &HexGridRows,
+        mut on_entry: impl FnMut(GridIndex),
+    ) -> Self {
+        let mut s = Self::new();
+        for r in columns.get_actual_column_count() {
+            let range = rows.get_actual_row_count(r);
+            for q in range {
+                let coords = GridIndex { q, r };
+                on_entry(coords);
+                s[coords] = GridEntry::None;
+            }
+        }
+        s
     }
 }
 
@@ -481,19 +642,32 @@ impl GridIndex {
 impl IndexMut<GridIndex> for HexHashGrid {
     fn index_mut(&mut self, index: GridIndex) -> &mut Self::Output {
         if self.data.get_mut(&index).is_none() {
-            self.data
-                .insert(index, (GridEntry::None, GridEntryState::Normal).into());
+            self.data.insert(index, GridEntry::None);
         }
         self.data.get_mut(&index).unwrap()
     }
 }
 
 impl Index<GridIndex> for HexHashGrid {
-    type Output = HexGridEntryState;
+    type Output = GridEntry;
 
     fn index(&self, index: GridIndex) -> &Self::Output {
         &self.data[&index]
     }
+}
+
+fn on_enemy_moved(
+    mut trigger: Trigger<EnemyMoved>,
+    mut spatial_grid: ResMut<HexSpatialGrid>,
+    size: Res<HexGridRenderRadius>,
+) {
+    let index = GridIndex::from_world_pos(trigger.event().position, **size);
+    spatial_grid.update(index, trigger.event().entity);
+    trigger.propagate(true);
+}
+
+fn on_enemy_removed(trigger: Trigger<OnRemove, Enemy>, mut spatial_grid: ResMut<HexSpatialGrid>) {
+    spatial_grid.remove(trigger.target());
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
